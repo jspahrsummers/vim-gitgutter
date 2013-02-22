@@ -7,7 +7,6 @@ let g:loaded_gitgutter = 1
 
 function! s:init()
   if !exists('g:gitgutter_initialised')
-    call s:define_highlights()
     call s:define_signs()
 
     let s:first_sign_id = 3000  " to avoid clashing with other signs
@@ -17,12 +16,6 @@ function! s:init()
 
     let g:gitgutter_initialised = 1
   endif
-endfunction
-
-function! s:define_highlights()
-  highlight lineAdded    guifg=#009900 guibg=NONE ctermfg=2 ctermbg=NONE
-  highlight lineModified guifg=#bbbb00 guibg=NONE ctermfg=3 ctermbg=NONE
-  highlight lineRemoved  guifg=#ff2222 guibg=NONE ctermfg=1 ctermbg=NONE
 endfunction
 
 function! s:define_signs()
