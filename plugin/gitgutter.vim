@@ -9,9 +9,14 @@ function! s:init()
   if !exists('g:gitgutter_initialised')
     call s:define_signs()
 
-    let s:first_sign_id = 3000  " to avoid clashing with other signs
+    " Vim doesn't namespace sign ids so every plugin shares the same
+    " namespace.  Sign ids are simply integers so to avoid clashes with other
+    " signs we guess at a clear run.
+    "
+    " Note also we currently never reset s:next_sign_id.
+    let s:first_sign_id = 3000
     let s:next_sign_id = s:first_sign_id
-    let s:sign_ids = []
+    let s:sign_ids = {}  " key: filename, value: list of sign ids
     let s:other_signs = []
 
     let g:gitgutter_initialised = 1
@@ -95,20 +100,17 @@ function! s:process_hunk(hunk)
   let from_count = a:hunk[1]
   let to_line    = a:hunk[2]
   let to_count   = a:hunk[3]
-  " added
-  if from_count == 0 && to_count > 0
+  if s:is_added(from_count, to_count)
     let offset = 0
     while offset < to_count
       let line_number = to_line + offset
       call add(modifications, [line_number, 'added'])
       let offset += 1
     endwhile
-  " removed
-  elseif from_count > 0 && to_count == 0
+  elseif s:is_removed(from_count, to_count)
     " removed lines came after `to_line`.
     call add(modifications, [to_line, 'removed'])
-  " modified
-  else
+  else  " modified
     let offset = 0
     while offset < to_count
       let line_number = to_line + offset
@@ -119,38 +121,33 @@ function! s:process_hunk(hunk)
   return modifications
 endfunction
 
+function! s:is_added(from_count, to_count)
+  return a:from_count == 0 && a:to_count > 0
+endfunction
+
+function! s:is_removed(from_count, to_count)
+  return a:from_count > 0 && a:to_count == 0
+endfunction
+
 " }}}
 
 " Sign processing {{{
 
-function! s:clear_signs()
-  for id in s:sign_ids
-    exe ":sign unplace " . id
-  endfor
-  let s:sign_ids = []
-  let s:next_sign_id = s:first_sign_id
+function! s:clear_signs(file_name)
+  if has_key(s:sign_ids, a:file_name)
+    for id in s:sign_ids[a:file_name]
+      exe ":sign unplace " . id . " file=" . a:file_name
+    endfor
+    let s:sign_ids[a:file_name] = []
+  endif
 endfunction
 
-function! s:show_signs(modified_lines)
-  let file_name = s:current_file()
-  for line in a:modified_lines
-    let line_number = line[0]
-    let type = line[1]
-    " TODO: eugh
-    if type ==? 'added'
-      let name = 'GitGutterLineAdded'
-    elseif type ==? 'removed'
-      let name = 'GitGutterLineRemoved'
-    elseif type ==? 'modified'
-      let name = 'GitGutterLineModified'
-    endif
-    call s:add_sign(line_number, name, file_name)
-  endfor
-endfunction
-
-function! s:find_other_signs()
+" This assumes there are no GitGutter signs in the current file.
+" If this is untenable we could change the regexp to exclude GitGutter's
+" signs.
+function! s:find_other_signs(file_name)
   redir => signs
-  silent exe ":sign place file=" . s:current_file()
+  silent exe ":sign place file=" . a:file_name
   redir END
   let s:other_signs = []
   for sign_line in split(signs, '\n')
@@ -162,11 +159,27 @@ function! s:find_other_signs()
   endfor
 endfunction
 
+function! s:show_signs(file_name, modified_lines)
+  for line in a:modified_lines
+    let line_number = line[0]
+    let type = line[1]
+    " TODO: eugh
+    if type ==? 'added'
+      let name = 'GitGutterLineAdded'
+    elseif type ==? 'removed'
+      let name = 'GitGutterLineRemoved'
+    elseif type ==? 'modified'
+      let name = 'GitGutterLineModified'
+    endif
+    call s:add_sign(line_number, name, a:file_name)
+  endfor
+endfunction
+
 function! s:add_sign(line_number, name, file_name)
   let id = s:next_sign_id()
-  if index(s:other_signs, a:line_number) == -1  " Don't clobber other people's signs.
+  if !s:is_other_sign(a:line_number)  " Don't clobber other people's signs.
     exe ":sign place " . id . " line=" . a:line_number . " name=" . a:name . " file=" . a:file_name
-    call s:remember_sign(id)
+    call s:remember_sign(id, a:file_name)
   endif
 endfunction
 
@@ -176,8 +189,18 @@ function! s:next_sign_id()
   return next_id
 endfunction
 
-function! s:remember_sign(id)
-  call add(s:sign_ids, a:id)
+function! s:remember_sign(id, file_name)
+  if has_key(s:sign_ids, a:file_name)
+    let sign_ids_for_current_file = s:sign_ids[a:file_name]
+    call add(sign_ids_for_current_file, a:id)
+  else
+    let sign_ids_for_current_file = [a:id]
+  endif
+  let s:sign_ids[a:file_name] = sign_ids_for_current_file
+endfunction
+
+function! s:is_other_sign(line_number)
+  return index(s:other_signs, a:line_number) == -1 ? 0 : 1
 endfunction
 
 " }}}
@@ -190,17 +213,18 @@ function! GitGutter()
     let diff = s:run_diff()
     let hunks = s:parse_diff(diff)
     let modified_lines = s:process_hunks(hunks)
-    call s:clear_signs()
-    call s:find_other_signs()
-    call s:show_signs(modified_lines)
+    let file_name = s:current_file()
+    call s:clear_signs(file_name)
+    call s:find_other_signs(file_name)
+    call s:show_signs(file_name, modified_lines)
   endif
 endfunction
 
 augroup gitgutter
   autocmd!
-  autocmd BufReadPost,BufWritePost,FileReadPost,FileWritePost,BufEnter * call GitGutter()
+  autocmd BufReadPost,BufWritePost,FileReadPost,FileWritePost * call GitGutter()
 augroup END
 
 " }}}
 
-" vim:set et sw=2:
+" vim:set et sw=2 fdm=marker:
